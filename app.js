@@ -398,9 +398,15 @@
       },
       // 操作中の手ごたえ。少し動かすたびに小さく鳴らす。
       tick: function (p) { tone({ freq: 500 + p * 700, dur: 0.05, vol: 0.06, type: 'square' }); },
+      // 次の工程の「どんな○○にする？」と被らないよう、鳴らした音の長さぶん
+      // 待ってから進められるように、必要な待ち時間（ms）を返す。
       cheer: function () {
-        if (say('dekita')) return;
+        if (say('dekita')) {
+          var b = buffers['dekita'];
+          return (b ? Math.ceil(b.duration * 1000) : 1400) + 300;
+        }
         [660, 880, 1175].forEach(function (f, i) { tone({ at: i * 0.09, freq: f, dur: 0.22, vol: 0.15, type: 'triangle' }); });
+        return 500;
       },
 
       pressDown: function () { tone({ freq: 90, to: 55, dur: 1.0, vol: 0.1, type: 'sawtooth' }); },
@@ -1051,9 +1057,12 @@
 
     function finishStep(delay) {
       later(function () {
-        state.built[stepKey] = true; redraw(); flashNow(); Sound.cheer();
+        state.built[stepKey] = true; redraw(); flashNow();
+        // 「できたー！」が「どんな○○にする？」と被らないよう、
+        // 鳴らした音の長さに合わせて次の工程へ進む間隔を変える。
+        var wait = Sound.cheer();
         var p = pt(0.5, 0.5); FX.star(p.x, p.y, 14);
-        later(done, ms(600));
+        later(done, ms(wait));
       }, delay || 0);
     }
 
