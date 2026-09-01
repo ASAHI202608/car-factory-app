@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>くるまこうじょう：パーツ合成の検証</title>
+<style>
+  :root { --line: #cfd8dd; --ink: #16232e; --bg: #f4f7f9; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; font: 14px/1.6 system-ui, sans-serif; color: var(--ink); background: var(--bg); }
+  h1 { font-size: 1.1rem; margin: 0 0 4px; }
+  h2 { font-size: 0.95rem; margin: 28px 0 8px; padding-top: 12px; border-top: 2px solid var(--line); }
+  p.note { margin: 0 0 16px; color: #5b6b72; font-size: 0.85rem; }
+
+  .stage { background: #fff; border: 2px solid var(--line); border-radius: 12px; padding: 12px; }
+  .stage svg { width: 100%; max-width: 520px; display: block; margin: 0 auto; }
+
+  .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 12px; }
+  .group { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+  .group b { display: block; font-size: 0.8rem; margin-bottom: 6px; }
+  .group button { display: block; width: 100%; margin-bottom: 4px; padding: 5px; font: inherit; font-size: 0.82rem;
+    background: #fff; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+  .group button[aria-pressed="true"] { background: var(--ink); color: #fff; border-color: var(--ink); }
+
+  .sheet { display: grid; grid-template-columns: repeat(9, 1fr); gap: 4px; }
+  .cell { background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 2px; }
+  .cell svg { width: 100%; display: block; }
+  .cell span { display: block; font-size: 9px; text-align: center; color: #7a8a91; line-height: 1.2; }
+
+  label.chk { display: inline-flex; align-items: center; gap: 6px; margin-bottom: 10px; font-size: 0.85rem; }
+  #selfcheck { font: 13px/1.7 ui-monospace, monospace; white-space: pre-wrap; }
+
+  h3 { font-size: 0.85rem; margin: 16px 0 6px; color: #40525c; }
+  .catalog-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+  .catalog-row .cell { padding: 6px; }
+  .catalog-row .cell svg { width: 100%; }
+  .catalog-row .cell span { font-size: 11px; line-height: 1.35; margin-top: 4px; }
+  .catalog-row .cell b { font-size: 12px; color: var(--ink); }
+</style>
+</head>
+<body>
+
+<h1>くるまこうじょう：パーツ合成の座標管理 検証ページ</h1>
+<p class="note">
+  本番アプリには含めない。ボディの形・タイヤの大きさを変えても、窓・やね・エンジンの
+  取り付け位置がずれないかを確かめるためのページ。<br>
+  絵と座標の定義は <code>car-parts.js</code> にあり、アプリと同じものを読んでいる
+  （別々に持つと、形を変えたときにここの検証が実態と合わなくなるため）。
+</p>
+
+<label class="chk"><input type="checkbox" id="guides"> 補助線を表示（地面・車軸・キャビン枠）</label>
+
+<div class="stage"><div id="preview"></div></div>
+<div class="controls" id="controls"></div>
+
+<h2>パーツ見本（デザイン案の確認用）</h2>
+<p class="note">同じボディに1つずつ付け替えて並べたもの。採否はここで判断する。</p>
+<div id="catalog"></div>
+
+<h2>自動チェック（全組み合わせ）</h2>
+<p class="note">目視では見落とすので、全組み合わせについて座標の決まりごとを機械的に検査する。</p>
+<div id="selfcheck" class="stage"></div>
+
+<h2>称号のかたより（全組み合わせ）</h2>
+<p class="note">パーツを足したら必ずここを見る。ひとつの称号が半分を大きく超えるようなら、
+そのパーツの tag が強すぎる。実際、最初は「へんてこカー」が67%を占めていた。</p>
+<div id="titlecheck" class="stage"></div>
+
+<h2>一覧①　ボディ × やね × タイヤ（27通り）</h2>
+<p class="note">縦＝ボディ3種。ボディを変えると車軸の位置が動き、タイヤを変えると車高が動く。この2つが同時にずれないかを見る。</p>
+<div class="sheet" id="sheetA"></div>
+
+<h2>一覧②　ボディ × まど × エンジン（27通り）</h2>
+<p class="note">縦＝ボディ3種。まどはキャビンに、ロケットエンジンは車体後端に取り付く。ボディの長さが変わっても、はみ出したり食い込んだりしないかを見る。</p>
+<div class="sheet" id="sheetB"></div>
+
+<script src="car-parts.js"></script>
+<script>
+(function () {
+  'use strict';
+  var CP = window.CarParts;
+  var VIEW = CP.VIEW, GROUND = CP.GROUND;
+
+  var cfg = { body: 'futsu', roof: 'futsu', color: 0, window: 'futsu', engine: 'futsu', seat: 'two', tire: 'futsu' };
+  var showGuides = false;
+
+  var AXES = [
+    { key: 'body',   label: 'ボディ',   opts: CP.BODIES },
+    { key: 'roof',   label: 'やね',     opts: CP.ROOFS },
+    { key: 'window', label: 'まど',     opts: CP.WINDOWS },
+    { key: 'engine', label: 'エンジン', opts: CP.ENGINES },
+    { key: 'seat',   label: 'シート',   opts: CP.SEATS },
+    { key: 'tire',   label: 'タイヤ',   opts: CP.TIRES }
+  ];
+
+  function guidesFor(c) {
+    var g = CP.geometry(c);
+    return '<g stroke="#d94f4f" stroke-width="0.6" fill="none" opacity="0.85">' +
+      '<line x1="0" y1="' + GROUND + '" x2="' + VIEW.w + '" y2="' + GROUND + '"/>' +
+      '<line x1="0" y1="' + g.axleY + '" x2="' + VIEW.w + '" y2="' + g.axleY + '" stroke-dasharray="3 3"/>' +
+      '<rect x="' + g.cabinL + '" y="' + g.cabinTop + '" width="' + (g.cabinR - g.cabinL) +
+      '" height="' + (g.lowerTop - g.cabinTop) + '" stroke="#2f7fd9" stroke-dasharray="2 2"/>' +
+      '</g>';
+  }
+
+  // 車の絵に地面と補助線を足して1枚のSVGにする
+  function svg(c) {
+    var body = CP.carSvg(c, null, {});
+    var ground = '<rect x="0" y="' + GROUND + '" width="' + VIEW.w + '" height="' + (VIEW.h - GROUND) + '" fill="#d9e2e6"/>';
+    var extra = showGuides ? guidesFor(c) : '';
+    return body.replace('>', '>' + ground).replace('</svg>', extra + '</svg>');
+  }
+
+  function drawPreview() { document.getElementById('preview').innerHTML = svg(cfg); }
+
+  function drawControls() {
+    document.getElementById('controls').innerHTML = AXES.map(function (ax) {
+      var btns = Object.keys(ax.opts).map(function (k) {
+        return '<button data-axis="' + ax.key + '" data-value="' + k + '" aria-pressed="' +
+          (cfg[ax.key] === k) + '">' + ax.opts[k].label + '</button>';
+      }).join('');
+      return '<div class="group"><b>' + ax.label + '</b>' + btns + '</div>';
+    }).join('') +
+    '<div class="group"><b>いろ</b>' + CP.COLORS.map(function (c, i) {
+      return '<button data-axis="color" data-value="' + i + '" aria-pressed="' + (cfg.color === i) + '">' + c.label + '</button>';
+    }).join('') + '</div>';
+  }
+
+  function drawSheet(id, a1, a2) {
+    var html = '';
+    Object.keys(CP.BODIES).forEach(function (b) {
+      Object.keys(a1.opts).forEach(function (v1) {
+        Object.keys(a2.opts).forEach(function (v2) {
+          var c = Object.assign({}, cfg);
+          c.body = b; c[a1.key] = v1; c[a2.key] = v2;
+          html += '<div class="cell">' + svg(c) +
+            '<span>' + CP.BODIES[b].label + '<br>' + a1.opts[v1].label + '／' + a2.opts[v2].label + '</span></div>';
+        });
+      });
+    });
+    document.getElementById(id).innerHTML = html;
+  }
+
+  function selfCheck() {
+    var r = CP.checkAll();
+    var lines = r.rules.map(function (rule) {
+      var f = r.fails[rule.name];
+      return (f.length ? '  NG  ' : '  OK  ') + rule.name +
+        (f.length ? '\n        ' + f.length + '件　例: ' + f.slice(0, 3).join(' / ') : '');
+    });
+    var head = (r.ngRules === 0)
+      ? '全 ' + r.total + ' 通り、すべての規則を通過'
+      : r.ngRules + ' 件の規則で違反あり（全 ' + r.total + ' 通り）';
+    document.getElementById('selfcheck').textContent = head + '\n\n' + lines.join('\n');
+    window.__checkResult = r;
+  }
+
+  // 称号のかたよりを見る。4.2 の重みは暫定なので、遊ぶ前に数で当たりを付ける。
+  function titleCheck() {
+    var st = CP.titleStats();
+    var out = '全 ' + st.total + ' 通り\n\n';
+    Object.keys(st.counts).forEach(function (k) {
+      var n = st.counts[k], p = n / st.total * 100;
+      var bar = new Array(Math.round(p / 2) + 1).join('■');
+      out += ('　　　　　' + CP.TITLES[k].name).slice(-9) + ' ' +
+        ('     ' + p.toFixed(1)).slice(-5) + '%  ' + bar + '\n';
+    });
+    out += '\nフルカスタム該当　' + (st.custom / st.total * 100).toFixed(1) + '%';
+    document.getElementById('titlecheck').textContent = out;
+  }
+
+  // パーツ見本：標準のボディに1つずつ付け替えて並べる。
+  // デザインの採否は、組み合わせ一覧ではなくここで判断する。
+  function drawCatalog() {
+    var GROUPS = [
+      { key: 'body',   label: '① プレス：ボディ',       opts: CP.BODIES },
+      { key: 'roof',   label: '② 組み立て：やね',       opts: CP.ROOFS },
+      { key: 'window', label: '④ まど',                 opts: CP.WINDOWS },
+      { key: 'engine', label: '⑤ エンジン',             opts: CP.ENGINES },
+      { key: 'seat',   label: '⑥ シート',               opts: CP.SEATS },
+      { key: 'tire',   label: '⑦ タイヤ',               opts: CP.TIRES }
+    ];
+    document.getElementById('catalog').innerHTML = GROUPS.map(function (grp) {
+      var cells = Object.keys(grp.opts).map(function (k) {
+        var c = { body: 'futsu', roof: 'futsu', color: 0, window: 'futsu', engine: 'futsu', seat: 'two', tire: 'futsu' };
+        c[grp.key] = k;
+        // シートは屋根があると見えにくいので、見本ではオープンにして中を見せる
+        if (grp.key === 'seat') c.roof = 'nashi';
+        var t = grp.opts[k].tag || {};
+        var tagTxt = [t.s ? 'スポーツ' + t.s : '', t.w ? 'はたらく' + t.w : '', t.x ? 'へんてこ' + t.x : '']
+          .filter(Boolean).join(' ') || 'ふつう';
+        return '<div class="cell"><div class="big">' + svg(c) + '</div>' +
+          '<span><b>' + grp.opts[k].label + '</b><br>' + tagTxt + '</span></div>';
+      }).join('');
+      return '<h3>' + grp.label + '</h3><div class="catalog-row">' + cells + '</div>';
+    }).join('');
+  }
+
+  function drawAll() {
+    drawPreview();
+    drawControls();
+    drawCatalog();
+    drawSheet('sheetA', { key: 'roof', opts: CP.ROOFS }, { key: 'tire', opts: CP.TIRES });
+    drawSheet('sheetB', { key: 'window', opts: CP.WINDOWS }, { key: 'engine', opts: CP.ENGINES });
+    selfCheck();
+    titleCheck();
+  }
+
+  document.getElementById('controls').addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-axis]');
+    if (!b) return;
+    cfg[b.dataset.axis] = b.dataset.axis === 'color' ? Number(b.dataset.value) : b.dataset.value;
+    drawAll();
+  });
+  document.getElementById('guides').addEventListener('change', function (e) {
+    showGuides = e.target.checked;
+    drawAll();
+  });
+
+  drawAll();
+})();
+</script>
+</body>
+</html>

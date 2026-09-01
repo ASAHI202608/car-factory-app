@@ -1,0 +1,892 @@
+/* ============================================================
+   くるまこうじょう（第1段階：プレス → 塗装 → タイヤ → 納車）
+
+   前作『のりものづくり』の作りを踏襲する：
+   ・画面は #screen を丸ごと描き直す（部分更新はしない）
+   ・触るものは大きく、余白を広く取る
+   ・工程が変わっても配置は変えない（毎回同じ場所を見ればよい状態を保つ）
+   ============================================================ */
+
+:root {
+  --ink: #16232e;
+  --ink-soft: #5b6b72;
+  --surface: #ffffff;
+  --line: #b9c7ce;
+  --line-soft: #dbe4e8;
+  --focus: #2f7fd9;
+  --accent: #e85d2b;
+  --factory-a: #2b3f4e;
+  --factory-b: #46606f;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  margin: 0; padding: 0; height: 100%; overflow: hidden;
+  background: var(--factory-a);
+  color: var(--ink);
+  font-family: "Hiragino Maru Gothic ProN", "Hiragino Sans", system-ui, sans-serif;
+  font-weight: 700;
+  -webkit-user-select: none; user-select: none;
+  touch-action: manipulation;
+}
+
+#screen { position: relative; width: 100%; height: 100%; overflow: hidden; }
+
+.fill { position: absolute; inset: 0; }
+
+/* 工場の中。上が暗く、下が床。 */
+.factory {
+  background:
+    linear-gradient(180deg, #22323f 0%, #2f4553 46%, #3b5464 62%, #6a7b85 62.5%, #7d8d96 100%);
+}
+/* 天井の梁 */
+.beams {
+  position: absolute; left: 0; right: 0; top: 0; height: 22%;
+  background:
+    repeating-linear-gradient(90deg, transparent 0 46px, rgba(255,255,255,.07) 46px 52px),
+    linear-gradient(180deg, rgba(0,0,0,.35), transparent);
+}
+
+/* ============================================================
+   上段：工程の進み具合
+   ============================================================ */
+.topbar {
+  position: absolute; top: 0; left: 0; right: 0;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: max(10px, env(safe-area-inset-top)) 14px 6px;
+  z-index: 5;
+}
+/* 工程は8個＋矢印7本ある。固定サイズだと狭い画面ではみ出すので、
+   画面幅に合わせて縮める（下限を決めて、小さくなりすぎないようにする）。 */
+.steps { display: flex; gap: clamp(1px, .5vw, 3px); align-items: center;
+  max-width: 100%; padding: 0 2px; }
+.step-dot {
+  width: clamp(22px, 6.4vw, 30px); height: clamp(22px, 6.4vw, 30px); border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: clamp(12px, 3.3vw, 15px); line-height: 1;
+  background: rgba(255,255,255,.16); color: rgba(255,255,255,.5);
+  border: 2px solid transparent;
+  flex: 0 0 auto;
+}
+.step-dot.done { background: #f2b705; color: #3a2c00; }
+.step-dot.now  { background: var(--accent); color: #fff; border-color: #fff; transform: scale(1.12); }
+/* 工程のあいだの矢印。ラインが流れていくことを示す。
+   通り過ぎた区間は色を付けて、どこまで来たかを2重に伝える。 */
+.step-arrow {
+  font-size: clamp(8px, 2.2vw, 11px); line-height: 1; color: rgba(255,255,255,.28);
+  flex: 0 0 auto;
+}
+.step-arrow.done { color: #f2b705; }
+
+.back-btn, .mute-btn {
+  background: rgba(255,255,255,.9); color: var(--ink);
+  border: none; border-radius: 999px;
+  font: inherit; font-size: 0.86rem; padding: 7px 13px;
+  cursor: pointer;
+  white-space: nowrap;   /* 2行になると帯が厚くなり、見出しと重なる */
+  flex: 0 0 auto;
+}
+.mute-btn { font-size: 1.05rem; padding: 6px 11px; }
+
+.step-title {
+  position: absolute; top: max(52px, calc(env(safe-area-inset-top) + 44px));
+  left: 0; right: 0; text-align: center;
+  padding: 0 12px;
+  color: #fff; font-size: 1.25rem; letter-spacing: .04em;
+  text-shadow: 0 2px 6px rgba(0,0,0,.4);
+  z-index: 4;
+}
+
+/* 狭い画面（スマホ縦）では、工程の帯（8個＋矢印で約360px）と
+   ボタンが1行に収まらない。1行に詰め込むと見出しが帯の中に入り込んで
+   絵文字と文字が重なる（実際にそうなった）。
+   **工程の帯を独立した行に落とし、見出しはその下へ下げる。** */
+@media (max-width: 600px) {
+  .topbar { flex-wrap: wrap; row-gap: 4px; }
+  .steps { order: -1; flex: 1 0 100%; justify-content: center; }
+  /* 幅0の詰め物は1行目に残ってしまうので消す。残すと space-between が効かず、
+     2行目に1つだけ残ったボタンが左端に寄る（実際にそうなった）。 */
+  .topbar > span:empty { display: none; }
+  .topbar .mute-btn { margin-left: auto; }
+  .step-title { top: max(92px, calc(env(safe-area-inset-top) + 84px)); font-size: 1.1rem; }
+}
+
+/* ============================================================
+   中段：作りかけの車を見せる台
+   ============================================================ */
+/* 選ぶ画面のあいだ、#bench は空のまま（組み立て工程で使う置き場所）で
+   同じ場所に居座る。pointer-events を切らないと、指で払っても
+   #bench が受け取ってしまい、車の上をなぞって選べなかった（実際に踏んだ）。
+   組み立て工程側は .task-layer が別に受け皿を持つので、ここは常に無効でよい。 */
+.bench {
+  position: absolute; left: 0; right: 0;
+  top: 20%; height: 42%;
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: none;
+}
+.bench svg { width: min(94%, 640px); height: 100%; overflow: visible; }
+
+/* ============================================================
+   選ぶ画面：中央の大きな車が「いま選んでいる形」
+
+   下に小さなカードを並べる形だと、選んだ結果がどんな形になるのか
+   5歳児には分からなかった。主役の車そのものを候補にして、
+   ◀▶ かフリックで切り替え、納得してから「これに する！」を押す。
+   両脇に前後の候補を薄く覗かせて「まだ他にもある」ことを伝える。
+   ============================================================ */
+/* 候補は1本のレールに全部並べ、レールごと動かす。
+   1つぶんの幅（＝間隔）は画面の48%。app.js の pickPitch() と合わせる。 */
+.pick-stage {
+  position: absolute; left: 50%; top: 20%; height: 42%; width: 48%;
+  transform: translateX(-50%); z-index: 3; pointer-events: none;
+}
+.pick-track { position: absolute; inset: 0; display: flex; align-items: center; }
+.pick-cell {
+  flex: 0 0 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+}
+/* 真ん中以外は縮めて薄くする。大きさも濃さも同じ transition に乗るので、
+   レールが動くのと一緒になめらかに変わる。 */
+/* 縮み・薄まりは **セルの直下の要素** に当てる。中の svg 一つ一つに当てると、
+   缶のように自前の transform を持つものが打ち消してしまう（実際にそうなった）。 */
+.pick-cell > svg, .pick-cell > .paint-pick, .pick-cell > .part-pick {
+  width: min(150%, 460px); height: 100%; overflow: visible;
+  transform: scale(.42); opacity: .3;
+  transition: transform 340ms cubic-bezier(.2,.85,.28,1), opacity 340ms ease;
+}
+.pick-cell.on > svg, .pick-cell.on > .paint-pick, .pick-cell.on > .part-pick { transform: none; opacity: 1; }
+
+/* 色の工程：上に「こうなるよ」の車、下にスプレー缶。
+   缶を車に重ねると、いちばん見たい車体の色が隠れてしまう。 */
+.paint-pick { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.paint-pick > svg { width: 100%; height: 56%; overflow: visible; }
+.paint-pick .spray-can { height: 40%; width: auto; margin-top: 2%;
+  filter: drop-shadow(0 5px 10px rgba(0,0,0,.28)); }
+
+/* エンジン・シートは単体で大きく見せる。中央にどんと据える。 */
+.part-pick { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; }
+.part-pick svg { width: 78%; height: 92%; overflow: visible;
+  filter: drop-shadow(0 6px 10px rgba(0,0,0,.22)); }
+
+/* ============================================================
+   工場の設備
+   工程ごとに「何の機械がやっているか」が見えるようにする。
+   ============================================================ */
+/* 溶接ロボット：天井のレールを走り、腕の先のトーチが指についてくる */
+.weld-rail {
+  position: absolute; left: 6%; right: 6%; height: 10px; z-index: 4;
+  background: linear-gradient(180deg, #aab6bd, #6d7b83 60%, #4a565d);
+  border-radius: 3px; box-shadow: 0 3px 6px rgba(0,0,0,.18);
+}
+.weld-bot {
+  position: absolute; width: 44px; margin-left: -22px; z-index: 5;
+  pointer-events: none;
+  transition: left 90ms linear;
+}
+.weld-bot .wb-body {
+  width: 44px; height: 26px; border-radius: 5px;
+  background: linear-gradient(180deg, #ffcf5c, #e8a01f 60%, #b97c12);
+  box-shadow: 0 3px 6px rgba(0,0,0,.22);
+}
+.weld-bot .wb-arm {
+  width: 7px; height: 24px; margin: 0 auto;
+  background: linear-gradient(90deg, #9daab1, #5d6b73);
+}
+.weld-bot .wb-torch {
+  width: 15px; height: 14px; margin: 0 auto;
+  background: linear-gradient(180deg, #7b8890, #3f4b52);
+  clip-path: polygon(0 0, 100% 0, 62% 100%, 38% 100%);
+}
+/* 溶接している間だけ、トーチの先が光る */
+.weld-bot.on .wb-torch { box-shadow: 0 8px 14px rgba(255,190,60,.85); }
+
+/* まどを運ぶ吸盤アーム */
+.glass-rail {
+  position: absolute; left: 10%; right: 10%; height: 9px; z-index: 2;
+  background: linear-gradient(180deg, #aab6bd, #66747c);
+  border-radius: 3px;
+}
+.handle.pane-handle .cable {
+  width: 4px; height: 30px; margin: 0 auto;
+  background: repeating-linear-gradient(180deg, #8e9ea7 0 5px, #46606f 5px 10px);
+}
+.handle.pane-handle .sucker {
+  width: 66px; height: 18px; margin: 0 auto -2px; border-radius: 5px 5px 2px 2px;
+  background: linear-gradient(180deg, #9daab1, #5d6b73);
+  position: relative;
+}
+.handle.pane-handle .sucker::before,
+.handle.pane-handle .sucker::after {
+  content: ''; position: absolute; bottom: -6px; width: 16px; height: 8px;
+  border-radius: 0 0 8px 8px; background: #33404a;
+}
+.handle.pane-handle .sucker::before { left: 8px; }
+.handle.pane-handle .sucker::after { right: 8px; }
+
+/* ⑩ 検査でたたく点検の的 */
+.check-pt {
+  position: absolute; width: 58px; height: 58px; margin: -29px 0 0 -29px;
+  border-radius: 50%; border: 3px solid var(--accent);
+  background: rgba(255,255,255,.92); z-index: 7; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px; line-height: 1; padding: 0;
+  animation: pulse2 1200ms ease-in-out infinite;
+  transition: opacity 320ms ease, transform 320ms ease, background 200ms ease;
+}
+.check-pt.ok { animation: none; background: #6ec97e; border-color: #3f9a52; color: #fff; }
+.check-pt.gone { opacity: 0; transform: scale(.6); pointer-events: none; }
+
+/* ④ 手が止まったときの声かけ */
+.nudge {
+  position: absolute; left: 50%; top: 68%; transform: translateX(-50%) translateY(8px);
+  background: #fffdf6; border: 3px solid #ffc978; border-radius: 999px;
+  padding: 8px 22px; font-size: 1.1rem; font-weight: 700; color: #4a3418;
+  box-shadow: 0 4px 14px rgba(120,80,20,.2); white-space: nowrap;
+  opacity: 0; pointer-events: none; z-index: 8;
+  transition: opacity 240ms ease, transform 240ms ease;
+}
+.nudge.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* 鉄板を運ぶベルト。プレスの工程だけ出す。 */
+.conveyor {
+  position: absolute; left: 0; right: 0; height: 15px; z-index: 1;
+  background: repeating-linear-gradient(90deg, #7c8a92 0 15px, #5d6b73 15px 30px);
+  border-top: 3px solid #97a4ab; border-bottom: 3px solid #46535a;
+  animation: beltRun 620ms linear infinite;
+}
+.conveyor.stop { animation: none; }
+@keyframes beltRun { to { background-position: -30px 0; } }
+
+.bench { z-index: 3; }
+
+/* 受け皿。矢印より下に敷くので、ボタンの邪魔をしない。 */
+.pick-swipe { position: absolute; left: 0; right: 0; top: 18%; height: 46%; z-index: 2;
+  touch-action: pan-y; }
+
+/* 矢印は名前の行に置く。車の帯の左右に置くと、せっかく覗かせた
+   両脇の候補をボタンが隠してしまった（実際にそうなった）。
+   ここなら親指も届く。 */
+.pick-arrow {
+  width: 58px; height: 58px; border-radius: 50%; border: none;
+  background: rgba(255,255,255,.95); box-shadow: 0 3px 10px rgba(0,0,0,.18);
+  color: #e85d2b; font-size: 24px; line-height: 1; cursor: pointer; z-index: 5;
+  display: flex; align-items: center; justify-content: center; flex: 0 0 auto;
+}
+.pick-arrow:active { transform: scale(.9); }
+/* 端まで来たら薄くする。「これ以上は無い」を色で伝える。 */
+.pick-arrow.dim { opacity: .35; }
+
+.pick-name {
+  position: absolute; left: 0; right: 0; top: 63%; z-index: 4;
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+}
+/* 名前と矢印を1行に。名前は白い座布団の上に置き、
+   どんな背景でも読めるようにする。 */
+.pick-row { display: flex; align-items: center; gap: 14px; }
+.pick-name .pn {
+  font-size: 1.5rem; font-weight: 700; color: #2c3f4a;
+  background: rgba(255,255,255,.92); border-radius: 999px;
+  padding: 6px 22px; min-width: 7em; text-align: center;
+  box-shadow: 0 2px 8px rgba(0,0,0,.1);
+}
+.pick-dots { display: flex; gap: 8px; align-items: center; }
+.pick-dots .pd {
+  width: 11px; height: 11px; border-radius: 50%;
+  background: rgba(44,63,74,.22); transition: transform 160ms ease, box-shadow 160ms ease;
+}
+/* 色の工程では点そのものが色見本になる（inline style が背景を上書きする）。
+   どれを選んでいるかは大きさと輪郭で示す。 */
+.pick-dots .pd.on { background: var(--accent); transform: scale(1.5);
+  box-shadow: 0 0 0 3px rgba(44,63,74,.3); }
+
+.pick-actions {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 6;
+  padding: 16px max(16px, env(safe-area-inset-bottom));
+  display: flex; justify-content: center;
+}
+
+/* ============================================================
+   下段：選択肢
+   ============================================================ */
+.choices {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  padding: 10px 12px max(14px, env(safe-area-inset-bottom));
+  display: flex; gap: 10px; justify-content: center; align-items: stretch;
+  z-index: 3;
+}
+/* 選択肢が6つある工程は横に並びきらないので、はみ出したぶんはスクロールで見せる。
+   縮めて詰め込むと、パーツの違いが分からなくなる（差が見えることが最優先）。 */
+.choices.scroll {
+  justify-content: flex-start; overflow-x: auto; overflow-y: hidden;
+  scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.choices.scroll::-webkit-scrollbar { display: none; }
+.choices.scroll .choice-btn { scroll-snap-align: center; }
+.choice-btn {
+  flex: 0 0 auto; width: 168px; min-height: 108px;
+  background: var(--surface); border: 4px solid var(--line-soft);
+  border-radius: 20px; padding: 8px 6px 10px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  font: inherit; color: var(--ink); cursor: pointer;
+}
+.choice-btn:active { transform: scale(0.95); border-color: var(--accent); }
+.choice-btn:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.choice-btn svg { width: 100%; height: 62px; overflow: visible; }
+.choice-btn .cap { font-size: 0.92rem; }
+
+/* 色見本は円で見せる（形の選択肢と混同しないように） */
+.swatch-row { gap: 12px; }
+.swatch {
+  flex: 0 0 auto; width: 68px; height: 68px; min-height: 0;
+  border-radius: 50%; border: 5px solid #fff; padding: 0;
+  box-shadow: 0 3px 0 rgba(0,0,0,.25);
+}
+
+/* ============================================================
+   大きなボタン（タイトル・結果）
+   ============================================================ */
+.big-btn {
+  font: inherit; font-size: 1.3rem; color: #fff;
+  background: var(--accent); border: none; border-radius: 999px;
+  padding: 16px 34px; cursor: pointer;
+  box-shadow: 0 5px 0 #b3451c;
+}
+.big-btn:active { transform: translateY(3px); box-shadow: 0 2px 0 #b3451c; }
+.big-btn.secondary { background: #fff; color: var(--ink); box-shadow: 0 5px 0 #b9c7ce; }
+.big-btn.secondary:active { box-shadow: 0 2px 0 #b9c7ce; }
+
+.center-stack {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px;
+  text-align: center; color: #fff;
+}
+.title-main { font-size: 2.1rem; text-shadow: 0 3px 10px rgba(0,0,0,.45); }
+.title-sub { font-size: 1rem; color: rgba(255,255,255,.8); }
+
+/* ============================================================
+   工程の演出
+   ============================================================ */
+/* 工程の道具は、画面の上から降りてくる共通の枠に載せる */
+.rig { position: absolute; left: 50%; top: 0; width: 62%; transform: translateX(-50%); z-index: 2; pointer-events: none; }
+
+/* ② 組み立て：溶接トーチが屋根の線をなぞる */
+.torch-rig .torch {
+  position: absolute; left: 0; top: 0; width: 26px; height: 34px;
+  background: linear-gradient(180deg, #8e9ea7 0 60%, #46606f 60% 100%);
+  clip-path: polygon(30% 0, 70% 0, 70% 62%, 100% 100%, 0 100%, 30% 62%);
+  opacity: 0;
+}
+.torch-rig.go .torch { animation: torchPass 2400ms linear forwards; }
+@keyframes torchPass {
+  0%   { opacity: 0; transform: translate(4%, 0); }
+  8%   { opacity: 1; }
+  92%  { opacity: 1; }
+  100% { opacity: 0; transform: translate(340%, 0); }
+}
+
+/* ④⑤⑥ 上から降りてきて取り付く部品（まど・エンジン・シート） */
+.drop-part { width: 42%; }
+.drop-part .chain {
+  position: absolute; left: 50%; top: 0; width: 4px; height: 46px; margin-left: -2px;
+  background: repeating-linear-gradient(180deg, #8e9ea7 0 5px, #46606f 5px 10px);
+}
+.drop-part .engine-block {
+  position: absolute; left: 50%; top: 44px; width: 54px; height: 34px; margin-left: -27px;
+  border-radius: 5px;
+  background: linear-gradient(180deg, #8e9ea7, #5a6a74 60%, #3d4b54);
+  box-shadow: 0 6px 12px rgba(0,0,0,.35);
+}
+.drop-part .engine-block::after {
+  content: ''; position: absolute; left: 8px; top: -7px; width: 38px; height: 8px; border-radius: 3px;
+  background: linear-gradient(180deg, #c9d4d9, #8e9ea7);
+}
+.drop-part .pane {
+  position: absolute; left: 50%; top: 30px; width: 84px; height: 30px; margin-left: -42px;
+  border-radius: 3px;
+  background: linear-gradient(160deg, rgba(230,246,255,.95), rgba(140,180,205,.85));
+  box-shadow: 0 4px 10px rgba(0,0,0,.28);
+}
+.drop-part .seat-block {
+  position: absolute; left: 50%; top: 34px; width: 30px; height: 34px; margin-left: -15px;
+  border-radius: 6px 6px 3px 3px;
+  background: linear-gradient(180deg, #9a6a55, #7d5342);
+  box-shadow: 0 4px 10px rgba(0,0,0,.28);
+}
+.drop-part.go { animation: dropIn 1500ms cubic-bezier(.45,.05,.55,1) forwards; }
+@keyframes dropIn {
+  0%   { transform: translate(-50%, -46%); opacity: 0; }
+  18%  { opacity: 1; }
+  78%  { transform: translate(-50%, 2%); }
+  90%  { transform: translate(-50%, -1%); }
+  100% { transform: translate(-50%, 0); opacity: 1; }
+}
+
+/* プレス機 */
+.press-rig { position: absolute; left: 50%; top: 0; width: 62%; transform: translateX(-50%); z-index: 2; }
+.press-head {
+  position: absolute; left: 0; right: 0; top: 0;
+  height: 46px; border-radius: 0 0 10px 10px;
+  background: linear-gradient(180deg, #8e9ea7, #59707d 72%, #3d525d);
+  box-shadow: 0 8px 14px rgba(0,0,0,.35);
+  transform: translateY(-100%);
+}
+.press-rig.drop .press-head { animation: pressDrop 2400ms cubic-bezier(.5,0,.9,.6) forwards; }
+@keyframes pressDrop {
+  0%   { transform: translateY(-100%); }
+  46%  { transform: translateY(150px); }
+  56%  { transform: translateY(150px); }
+  100% { transform: translateY(-100%); }
+}
+.press-rig .rail {
+  position: absolute; top: 0; bottom: 0; width: 10px;
+  background: linear-gradient(90deg, #46606f, #26363f);
+}
+.press-rig .rail.l { left: 4%; } .press-rig .rail.r { right: 4%; }
+
+/* 塗装のスプレーガン */
+.spray-gun { position: absolute; z-index: 3; width: 54px; opacity: 0; }
+.spray-gun.on { opacity: 1; animation: sprayPass 2600ms linear forwards; }
+@keyframes sprayPass {
+  0%   { transform: translate(-140%, 0); }
+  100% { transform: translate(560%, 0); }
+}
+
+/* タイヤが転がってくる */
+.roll-in { animation: rollIn 1100ms cubic-bezier(.3,.7,.4,1) forwards; }
+@keyframes rollIn {
+  0%   { transform: translateX(-220px) rotate(-540deg); }
+  100% { transform: translateX(0) rotate(0deg); }
+}
+
+/* 完成した車が走り出す。
+   停止位置は right で決める。left からの移動量を vw で決めると、画面幅によって
+   お客さんを追い越したり手前で止まったりする（実際に追い越して重なった）。 */
+/* 納車の車。絵の下にある接地線から下の余白（約13%）を詰めて、
+   お客さんと同じ地面の高さに立たせる。詰めないと車だけ浮いて見える。 */
+.drive-out { position: absolute; right: 24%; bottom: 27%; width: min(46%, 320px); }
+.drive-out svg { display: block; margin-bottom: -13%; }
+/* タイヤの回転。位置決めは <g> の transform-origin（インラインで指定）に任せる。
+   CSS の transform は SVG の transform 属性を上書きするので、両者を混ぜない。 */
+.spin { animation: spin 520ms linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* できあがりの合図 */
+.flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; z-index: 6; }
+.flash.go { animation: flashOnce 420ms ease-out forwards; }
+@keyframes flashOnce { 0% { opacity: .0; } 18% { opacity: .55; } 100% { opacity: 0; } }
+
+/* 粒子（火花・塗装ミスト・砂ぼこり） */
+.fx-layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 4; }
+
+/* ============================================================
+   納車の場面
+   ============================================================ */
+.street { background: linear-gradient(180deg, #7fd0f4 0%, #bfe9fb 40%, #e7f7fe 57.5%,
+  #8fbf7a 58%, #7cae68 61%, #b9c4cb 61.5%, #9aa8b1 100%); }
+.buildings { position: absolute; left: 0; right: 0; width: 100%; bottom: 42%; height: 26%; opacity: .9; }
+.sky-deco { position: absolute; left: 0; right: 0; width: 100%; bottom: 42%; height: 34%; }
+/* 木は道のきわに立たせる。建物より手前、車より奥。 */
+.treeline { position: absolute; left: 0; right: 0; width: 100%; bottom: 38.5%; height: 11%; }
+.customer { position: absolute; right: 9%; bottom: 27%; width: 58px; z-index: 3; }
+.customer.wave .arm { animation: wave 620ms ease-in-out infinite alternate; transform-origin: 14px 24px; }
+@keyframes wave { from { transform: rotate(-8deg); } to { transform: rotate(-42deg); } }
+
+/* 結果は画面の下の帯に置く。車とお客さんは bottom 27% にいるので、ここが被らない
+   高さに収める（前作で「褒め画面が演出を覆う」問題を踏んだため、最初から避ける）。
+   ただし **収まらないときは下にあふれて、ボタンが画面外に出て押せなくなる**。
+   称号の札を足したら実際にそうなったので、中身の実寸（札44＋説明19＋ボタン49＋余白）が
+   入る高さまで上限を広げ、行間とボタンの厚みを詰めた。上端は透明なグラデーションなので、
+   多少せり上がっても車は隠れない。 */
+.result {
+  position: absolute; left: 0; right: 0; bottom: 0; max-height: 32%;
+  padding: 6px 16px max(10px, env(safe-area-inset-bottom));
+  background: linear-gradient(180deg, rgba(255,255,255,0), rgba(255,255,255,.96) 34%);
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  opacity: 0; transform: translateY(18px); pointer-events: none;
+  transition: opacity 320ms ease, transform 320ms ease;
+  z-index: 7;
+}
+.result.show { opacity: 1; transform: none; pointer-events: auto; }
+.result-main { font-size: 1.35rem; }
+.result-sub { font-size: 0.9rem; color: var(--ink-soft); }
+.result-actions { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+/* 帯の高さに収める。はみ出すとボタンが画面外で押せなくなる。 */
+.result .big-btn { font-size: 1.15rem; padding: 10px 26px; }
+
+/* ============================================================
+   称号（車のタイプ）
+   検査でお披露目し、納車の結果とガレージのカードにも同じ見た目で出す。
+   ============================================================ */
+.title-plate {
+  display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  justify-content: center;
+  background: linear-gradient(180deg, #fffdf6, #ffeecd);
+  border: 3px solid #ffbe5c; border-radius: 999px;
+  padding: 8px 22px; box-shadow: 0 4px 14px rgba(160,110,30,.18);
+  color: #4a3418; font-size: 1.5rem; font-weight: 700; white-space: nowrap;
+}
+.title-plate .t-icon { font-size: 1.5rem; }
+/* ＋フルカスタムは称号に添える印。称号より小さくして、主従を保つ。 */
+.title-plate .t-custom {
+  font-size: .8rem; font-weight: 700; color: #b4471f;
+  background: #ffe0cf; border-radius: 999px; padding: 3px 10px;
+}
+
+/* 検査の札。車を見てから出るので、出るときだけ動かす。 */
+#titlePlate {
+  position: absolute; left: 50%; bottom: 20%; transform: translateX(-50%) scale(.8);
+  opacity: 0; transition: opacity 280ms ease, transform 280ms cubic-bezier(.3,1.5,.5,1);
+  z-index: 6;
+}
+#titlePlate.show { opacity: 1; transform: translateX(-50%) scale(1); }
+
+/* 納車の結果では帯に収める。はみ出すとボタンが画面外に出る。 */
+.result .title-plate { font-size: 1.25rem; padding: 6px 18px; }
+.result .title-plate .t-icon { font-size: 1.25rem; }
+
+/* ガレージのカード。称号は絵の下に小さく敷く。 */
+.garage-card { position: relative; }
+.garage-title {
+  display: block; font-size: .72rem; color: #6b5334; text-align: center;
+  padding: 2px 2px 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.garage-title b { display: block; font-size: .62rem; color: #b4471f; font-weight: 700; }
+.garage-mishap {
+  position: absolute; right: 5px; top: 4px; font-size: 1rem;
+  background: rgba(255,255,255,.9); border-radius: 999px; padding: 1px 5px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.14);
+}
+
+/* ============================================================
+   ハプニング（走る場面）
+   こわがらせないので、赤や警告色は使わない。必ず解決する話として見せる。
+   ============================================================ */
+/* せりふは画面の中央上に大きく置く。車の横の吹き出しにすると、
+   車が画面の左寄りに止まるぶん端に寄って読みにくかった。 */
+.mishap-say {
+  position: absolute; left: 50%; top: 15%; transform: translateX(-50%) translateY(-8px);
+  background: #fffdf6; border: 3px solid #ffc978; border-radius: 999px;
+  padding: 9px 24px; font-size: 1.2rem; color: #4a3418; font-weight: 700;
+  box-shadow: 0 5px 16px rgba(120,80,20,.18); white-space: nowrap;
+  opacity: 0; pointer-events: none; z-index: 8;
+  transition: opacity 240ms ease, transform 240ms cubic-bezier(.3,1.5,.5,1);
+}
+.mishap-say.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* 登場人物は、止まった車の箱にそろえて置く。
+   車と同じ right/width/translate を使うので、車の大きさが変わっても位置がずれない。 */
+.mishap-stage {
+  position: absolute; right: 24%; bottom: 27%; width: min(46%, 320px);
+  transform: translateX(-30vw); pointer-events: none; z-index: 4; display: none;
+}
+.mishap-stage.show { display: block; }
+.mishap-actor { position: absolute; font-size: 52px; line-height: 1; }
+
+/* ガス欠：給油車が左からきて車の後ろにつき、給油がすんだら左へ帰る */
+.mishap-stage.gas .mishap-actor {
+  left: -24%; bottom: 2px;
+  animation: mishapDriveIn 900ms cubic-bezier(.3,.7,.4,1) both;
+}
+@keyframes mishapDriveIn { from { transform: translateX(-220%); } to { transform: none; } }
+.mishap-stage.gas.fixed .mishap-actor { animation: mishapDriveAway 900ms ease-in both; }
+@keyframes mishapDriveAway { from { transform: none; } to { transform: translateX(-260%); } }
+
+/* パンク：工場の人が後ろのタイヤのところにあらわれ、直したら消える */
+.mishap-stage.flat .mishap-actor {
+  left: 6%; bottom: 2px;
+  animation: mishapPop 420ms cubic-bezier(.3,1.5,.5,1) both;
+}
+@keyframes mishapPop { from { transform: scale(.3) translateY(16px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* ねこ：車の鼻先に出てきて通せんぼし、どいたら前方へ去る。
+   横から見た絵なので「道を横切る」は描けない。**車の前で止まって、前へ去る**
+   ことで「ねこがいたから止まった」が伝わる。
+   後ろへ抜けさせると車を通り抜けたように見えてしまう（実際にそう見えた）。 */
+.mishap-stage.cat .mishap-actor {
+  left: 96%; bottom: 0;
+  animation: mishapCatIn 1000ms ease-out both;
+}
+@keyframes mishapCatIn { from { transform: translateX(210%); } to { transform: none; } }
+.mishap-stage.cat.fixed .mishap-actor { animation: mishapCatOut 900ms ease-in both; }
+@keyframes mishapCatOut { from { transform: none; } to { transform: translateX(330%); } }
+
+/* 直ったら、上で個別に決めていない登場人物は小さくなって消える */
+.mishap-stage.fixed .mishap-actor { animation: mishapBye 900ms ease-in both; }
+@keyframes mishapBye { from { transform: none; opacity: 1; } to { transform: scale(.5) translateY(10px); opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 1ms !important; transition-duration: 1ms !important; }
+}
+
+/* ============================================================
+   第3段階：操作・検査・くらべる・入荷・ガレージ
+   ============================================================ */
+
+/* ---- ① 操作の受け皿。画面全体を覆い、指の動きを拾う ---- */
+.task-layer { position: absolute; inset: 0; z-index: 6; touch-action: none; }
+
+/* つかむところ。5歳の指でも外さない大きさ（最小64px）にする */
+.handle {
+  position: absolute; z-index: 7; left: 50%; transform: translateX(-50%);
+  pointer-events: none;
+}
+.handle::after {                       /* さわる場所を示す波紋 */
+  content: ''; position: absolute; left: 50%; top: 50%; width: 92px; height: 92px;
+  margin: -46px 0 0 -46px; border-radius: 50%; border: 3px solid rgba(255,255,255,.55);
+  animation: pulse 1300ms ease-out infinite;
+}
+@keyframes pulse { 0% { transform: scale(.7); opacity: .9; } 100% { transform: scale(1.5); opacity: 0; } }
+
+.handle.lever { top: 26%; left: 82%; }
+.handle.lever .stick { width: 8px; height: 74px; margin: 0 auto; background: linear-gradient(90deg,#8e9ea7,#46606f); border-radius: 4px; }
+.handle.lever .knob { width: 46px; height: 46px; margin: 0 auto -6px; border-radius: 50%;
+  background: radial-gradient(circle at 34% 30%, #ff9d6e, #d0451f 70%); box-shadow: 0 4px 10px rgba(0,0,0,.4); }
+
+.handle.pane-handle { top: 16%; }
+.handle.pane-handle .pane {
+  width: 96px; height: 34px; border-radius: 3px;
+  background: linear-gradient(160deg, rgba(230,246,255,.95), rgba(140,180,205,.85));
+  box-shadow: 0 4px 10px rgba(0,0,0,.3);
+}
+.handle.crane-handle { top: 10%; }
+.handle.crane-handle .chain { width: 4px; height: 48px; margin: 0 auto;
+  background: repeating-linear-gradient(180deg,#8e9ea7 0 5px,#46606f 5px 10px); }
+/* クレーン・シートの荷は、選んだ実物の単体絵（partIcon）を運ぶ。
+   箱の下地は影として残し、絵はその上に重ねる。 */
+.handle.crane-handle .engine-block { width: 58px; height: 44px; margin: 0 auto; position: relative; }
+.handle.crane-handle .engine-block svg { width: 100%; height: 100%; overflow: visible;
+  filter: drop-shadow(0 6px 10px rgba(0,0,0,.35)); }
+.handle.seat-handle { top: 18%; }
+.handle.seat-handle .seat-block { width: 40px; height: 44px; margin: 0 auto; position: relative; }
+.handle.seat-handle .seat-block svg { width: 100%; height: 100%; overflow: visible;
+  filter: drop-shadow(0 4px 8px rgba(0,0,0,.3)); }
+
+/* ============================================================
+   動かす向きを示す矢印
+   「なぞる」「ひく」と言葉で書いても、文字が読めない5歳児には
+   どちらへ動かすか伝わらない。取っ手や線のそばで、進む向きへ
+   矢印を流す。動かし始めたら消す（線の上に残ると跡が見えない）。
+   ============================================================ */
+.cue {
+  position: absolute; z-index: 6; pointer-events: none; display: flex;
+  color: #ff7a1f; font-size: 26px; line-height: .82;
+  text-shadow: 0 1px 0 #fff, 0 2px 6px rgba(0,0,0,.25);
+  transition: opacity 260ms ease;
+}
+.cue span:nth-child(2) { animation-delay: .14s; }
+.cue span:nth-child(3) { animation-delay: .28s; }
+.cue span:nth-child(4) { animation-delay: .42s; }
+.cue span:nth-child(5) { animation-delay: .56s; }
+/* 光るだけでなく、少しその向きへ動かす。「流れている」ほうが向きが伝わる。 */
+.cue.down span { animation: cueDown 1100ms ease-in-out infinite; }
+@keyframes cueDown {
+  0%, 70%, 100% { opacity: .3; transform: translateY(-2px); }
+  35% { opacity: 1; transform: translateY(4px); }
+}
+.cue.right span { animation: cueRight 1100ms ease-in-out infinite; }
+@keyframes cueRight {
+  0%, 70%, 100% { opacity: .3; transform: translateX(-3px); }
+  35% { opacity: 1; transform: translateX(5px); }
+}
+
+/* 下へ引く・おろす（レバー／まど／クレーン／シート）。取っ手の真下に出す。 */
+.cue.down {
+  left: 50%; top: 100%; margin-top: 4px; transform: translateX(-50%);
+  flex-direction: column; align-items: center;
+}
+/* 線をなぞる向き（左から右へ）。線の上に等間隔で流す。 */
+.cue.right { left: 0; right: 0; top: 50%; margin-top: -10px; justify-content: space-around; }
+
+/* なぞり始める場所。「どこから」が分からないと線があっても始められない。 */
+.cue-start {
+  position: absolute; left: -10px; top: 50%; margin-top: -20px;
+  font-size: 26px; z-index: 6; pointer-events: none;
+  animation: cueTap 1200ms ease-in-out infinite;
+  transition: opacity 260ms ease;
+}
+@keyframes cueTap { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
+
+/* こする（塗装）は向きが自由なので、矢印ではなく左右に往復する手で見せる。 */
+.cue-sweep {
+  position: absolute; left: 50%; margin-left: -16px; z-index: 6; pointer-events: none;
+  font-size: 32px; line-height: 1;
+  animation: cueSweep 1800ms ease-in-out infinite;
+  transition: opacity 260ms ease;
+}
+@keyframes cueSweep {
+  0%, 100% { transform: translateX(-84px) rotate(-8deg); }
+  50% { transform: translateX(84px) rotate(8deg); }
+}
+
+/* たたく場所のしるし。向きが無いので矢印ではなく指を出す。 */
+.cue-tap {
+  position: absolute; margin-left: -14px; z-index: 6; pointer-events: none;
+  font-size: 28px; line-height: 1;
+  animation: cueTap 1200ms ease-in-out infinite;
+  transition: opacity 260ms ease;
+}
+
+.cue.off, .cue-start.off, .cue-sweep.off, .cue-tap.off { opacity: 0; }
+
+/* なぞる線 */
+.weld-guide { position: absolute; left: 12%; right: 12%; height: 10px; z-index: 5; pointer-events: none; }
+.weld-guide .dash {
+  height: 100%; border-radius: 5px;
+  background:
+    linear-gradient(90deg, #ffd76a 0 var(--p, 0%), transparent var(--p, 0%)),
+    repeating-linear-gradient(90deg, rgba(255,255,255,.5) 0 12px, transparent 12px 22px);
+  box-shadow: 0 0 12px rgba(255,215,106,.5);
+}
+/* こする（塗装）のカーソル。選んだスプレー缶がそのまま指についてくる。 */
+.spray-cursor { position: absolute; width: 46px; height: 108px;
+  margin: -96px 0 0 -23px; z-index: 7; pointer-events: none;
+  filter: drop-shadow(0 4px 8px rgba(0,0,0,.3));
+  transform: rotate(-16deg); }
+.spray-cursor svg { width: 100%; height: 100%; display: block; }
+/* 置き場所・はめる場所。矢印だけでは「どこへ」が伝わらないので、
+   運ぶ先を点線で囲って見せる（まど／エンジン／シートで共通）。 */
+.slot { position: absolute; left: 50%; width: 104px; height: 38px; margin-left: -52px; z-index: 5;
+  border: 3px dashed rgba(255,255,255,.6); border-radius: 5px; pointer-events: none;
+  animation: slotBreathe 1600ms ease-in-out infinite; }
+.slot.narrow { width: 54px; margin-left: -27px; }
+@keyframes slotBreathe { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+/* ボルト */
+.bolt { position: absolute; width: 52px; height: 52px; margin: -26px 0 0 -26px; z-index: 7;
+  display: flex; align-items: center; justify-content: center; font-size: 26px;
+  background: rgba(255,255,255,.18); border: 3px solid rgba(255,255,255,.7); border-radius: 50%;
+  animation: pulse2 1200ms ease-in-out infinite; pointer-events: none; }
+@keyframes pulse2 { 0%,100% { transform: scale(1); } 50% { transform: scale(1.12); } }
+.bolt.hit { background: #f2b705; border-color: #fff; animation: none; }
+
+/* ---- ⑥ 検査（お披露目） ---- */
+.inspect-stage { position: absolute; left: 0; right: 0; top: 22%; height: 46%; display: flex;
+  align-items: center; justify-content: center; }
+.inspect-car { width: min(92%, 620px); animation: showOff 3600ms ease-in-out infinite alternate; }
+.inspect-car svg { width: 100%; display: block; }
+@keyframes showOff { from { transform: translateY(0) scale(1); } to { transform: translateY(-6px) scale(1.02); } }
+.spotlight { position: absolute; left: 50%; top: -20%; width: 78%; height: 150%; margin-left: -39%;
+  background: radial-gradient(ellipse at 50% 30%, rgba(255,245,215,.34), rgba(255,245,215,0) 62%); pointer-events: none; }
+.turntable { position: absolute; left: 50%; bottom: 2%; width: 62%; height: 26px; margin-left: -31%;
+  border-radius: 50%; background: radial-gradient(ellipse, rgba(255,255,255,.20), rgba(255,255,255,0) 70%); }
+.inspect-actions { position: absolute; left: 0; right: 0; bottom: 0;
+  padding: 16px max(16px, env(safe-area-inset-bottom)); display: flex; justify-content: center; gap: 12px; z-index: 7; }
+/* 称号を見ないまま先へ進めないよう、ボタンは称号のあとに現れる。 */
+.inspect-actions.late { opacity: 0; pointer-events: none;
+  transform: translateY(10px); transition: opacity 300ms ease, transform 300ms ease; }
+.inspect-actions.late.show { opacity: 1; pointer-events: auto; transform: none; }
+/* ガレージで大きく見たときの、称号とハプニングの記録。
+   1つの塊にして下から積む。別々に絶対配置すると下のボタンと重なる。 */
+.detail-info { position: absolute; left: 0; right: 0; bottom: 14%;
+  display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 0 12px; }
+.detail-note { color: #6b5334; font-size: .95rem; text-align: center; }
+
+/* ---- ④ くらべる ---- */
+.lane { position: absolute; left: 0; right: 0; height: 26%; }
+.lane.top { top: 16%; }
+.lane.bottom { top: 44%; }
+.lane .lane-tag { position: absolute; left: 12px; top: 0; z-index: 2; font-size: .8rem; color: #24333d;
+  background: rgba(255,255,255,.78); border-radius: 999px; padding: 2px 10px; }
+.race-car { position: absolute; right: 14%; bottom: 0; width: min(42%, 300px); z-index: 2; }
+/* くらべるは草原のレース場。2本のレーンそれぞれに道を敷いて、
+   どちらの車も「道の上を走っている」ように見せる。 */
+.race-field { background: linear-gradient(180deg, #7fd0f4 0%, #bfe9fb 34%, #dff4c9 46%,
+  #9ed382 52%, #86c76b 100%); }
+.race-sky { position: absolute; left: 0; right: 0; width: 100%; top: 0; height: 52%; }
+.lane::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: -7px; height: 20px;
+  background: linear-gradient(180deg, #cbd6dd 0 3px, #aeb9c1 3px, #97a3ac 100%);
+  border-radius: 3px; z-index: 0;
+}
+/* 車の絵は接地線の下に余白がある（VIEW 126 に対して GROUND 96）。
+   その分だけ下マージンで詰めると、箱の下辺＝タイヤの接地線になり、
+   レーンの道をそこに敷くだけで車が路面に乗る。230 幅に対する 30 で約13%。 */
+.race-car svg { width: 100%; display: block; margin-bottom: -13%; }
+.lane .goal { position: absolute; right: 10%; top: 0; bottom: 0; width: 6px;
+  background: repeating-linear-gradient(180deg,#1d242a 0 8px,#fff 8px 16px); opacity: .75; }
+
+/* ---- ③ 入荷 ---- */
+.truck { position: absolute; left: 50%; top: 20%; font-size: 64px; transform: translateX(-50%);
+  animation: truckIn 900ms cubic-bezier(.3,.7,.4,1) both; }
+@keyframes truckIn { from { transform: translate(-260%, 0); } to { transform: translate(-50%, 0); } }
+/* 1周で最大6種類とどく。縦に積むと画面からあふれてボタンに重なるので、
+   横スクロールで見せる（あふれさせない・縮めすぎない）。 */
+.restock-row { position: absolute; left: 0; right: 0; top: 38%; bottom: 96px;
+  display: flex; gap: 10px; align-items: center; padding: 0 12px;
+  overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; scrollbar-width: none; }
+.restock-row::-webkit-scrollbar { display: none; }
+.restock-card { flex: 0 0 auto; width: 190px; background: #fff; border-radius: 14px; padding: 6px;
+  scroll-snap-align: center;
+  opacity: 0; transform: translateY(14px) scale(.9); transition: opacity 320ms ease, transform 320ms ease; }
+.restock-card.show { opacity: 1; transform: none; }
+.restock-card svg { width: 100%; display: block; }
+.restock-card span { display: block; text-align: center; font-size: .85rem; color: var(--ink); }
+
+/* ---- ② ガレージ ---- */
+.garage-wrap { position: absolute; left: 0; right: 0; top: 20%; bottom: 0; overflow-y: auto; padding: 0 12px 20px; }
+.garage-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.garage-card { background: rgba(255,255,255,.94); border: 3px solid transparent; border-radius: 14px;
+  padding: 4px; cursor: pointer; }
+.garage-card:active { transform: scale(.96); border-color: var(--accent); }
+.garage-card svg { width: 100%; display: block; }
+.gallery-empty { text-align: center; color: rgba(255,255,255,.85); font-size: 1.2rem; padding-top: 8%; }
+.gallery-empty span { font-size: .85rem; color: rgba(255,255,255,.6); }
+
+/* ============================================================
+   明るい工場（2026-08-30 差し替え）
+   暗い背景は5歳児に響かなかった。明るくすると白文字が読めなくなるので、
+   文字・アイコン・操作の合図の色も同時に直す必要がある。
+   ============================================================ */
+html, body { background: #ffeed6; }
+.factory-bg { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+/* 明るい背景の上では、文字は濃い色にする */
+/* 見出しはプレス機など濃い色の設備の上にも重なる。白い縁取りを付けて、
+   どんな背景でも読めるようにする（濃い灰色の上で読めなくなっていた）。 */
+.step-title { color: #2c3f4a;
+  text-shadow: 0 1px 0 #fff, 0 -1px 0 #fff, 1px 0 0 #fff, -1px 0 0 #fff,
+    0 0 8px rgba(255,255,255,.95); }
+.title-main { color: #24333d; text-shadow: 0 2px 0 rgba(255,255,255,.6); }
+.title-sub  { color: #5b6b72; }
+.gallery-empty { color: #3d505c; }
+.gallery-empty span { color: #7a8a91; }
+
+/* 進み具合。薄い白では見えないので、未通過は薄いグレーにする */
+.step-dot { background: rgba(44,63,74,.12); color: rgba(44,63,74,.45); }
+.step-arrow { color: rgba(44,63,74,.25); }
+.step-arrow.done { color: #e8961f; }
+.step-dot.done { background: #ffc23c; color: #4a3400; }
+
+.back-btn, .mute-btn { background: rgba(255,255,255,.95); box-shadow: 0 2px 0 rgba(0,0,0,.12); }
+
+/* なぞる線も同じ理由。白い破線は明るい壁の上で消えてしまい、
+   「どこをなぞるのか」が見えなくなる。濃い色の破線にする。 */
+.weld-guide .dash {
+  background:
+    linear-gradient(90deg, #ff9d2e 0 var(--p, 0%), transparent var(--p, 0%)),
+    repeating-linear-gradient(90deg, rgba(70,96,111,.55) 0 12px, transparent 12px 22px);
+  box-shadow: 0 0 10px rgba(255,157,46,.45);
+}
+
+/* 操作の合図。白い波紋は明るい床の上で消えるので、濃い色にする */
+.handle::after { border-color: rgba(232,93,43,.75); }
+.bolt { background: rgba(255,255,255,.85); border-color: #e85d2b; color: #2c3f4a; }
+.bolt.hit { background: #ffc23c; border-color: #e8961f; }
+.slot { border-color: rgba(44,63,74,.45); }
+.weld-guide .dash {
+  background:
+    linear-gradient(90deg, #ff8a2b 0 var(--p, 0%), transparent var(--p, 0%)),
+    repeating-linear-gradient(90deg, rgba(44,63,74,.35) 0 12px, transparent 12px 22px);
+  box-shadow: 0 0 10px rgba(255,138,43,.45);
+}
+.spray-cursor { background: radial-gradient(circle, rgba(255,255,255,.95), rgba(255,255,255,0) 70%);
+  box-shadow: 0 0 10px rgba(0,0,0,.15); }
+
+/* 白いカードは明るい壁に溶けるので、縁をつける */
+.restock-card { border: 2px solid #f0c99a; }
+.garage-card { border-color: #f0c99a; }
+
+/* 検査：明るい工場ではスポットライトを暖色の床明かりに変える */
+.spotlight { background: radial-gradient(ellipse at 50% 34%, rgba(255,236,180,.55), rgba(255,236,180,0) 62%); }
+.turntable { background: radial-gradient(ellipse, rgba(44,63,74,.18), rgba(44,63,74,0) 70%); }
